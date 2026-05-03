@@ -27,10 +27,8 @@ class CNN_LSTM_Attention(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
 
-        # embedding 161 × 128
         self.embedding = nn.Embedding(vocab_size, 128, padding_idx=0)
 
-        # conv 128 → 128 kernel=5
         self.conv = nn.Conv1d(
             in_channels=128,
             out_channels=128,
@@ -38,7 +36,6 @@ class CNN_LSTM_Attention(nn.Module):
             padding=2
         )
 
-        # BiLSTM hidden=128
         self.lstm = nn.LSTM(
             input_size=128,
             hidden_size=128,
@@ -47,30 +44,27 @@ class CNN_LSTM_Attention(nn.Module):
             bidirectional=True
         )
 
-        # attention: 256 → 1
         self.attn = nn.Linear(256, 1)
-
-        # final classifier: 256 → 2
         self.fc = nn.Linear(256, 2)
 
     def forward(self, x):
-        x = self.embedding(x)          # [B, L, 128]
-        x = x.transpose(1, 2)          # [B, 128, L]
-        x = F.relu(self.conv(x))       # [B, 128, L]
-        x = x.transpose(1, 2)          # [B, L, 128]
+        x = self.embedding(x)
+        x = x.transpose(1, 2)
+        x = F.relu(self.conv(x))
+        x = x.transpose(1, 2)
 
-        lstm_out, _ = self.lstm(x)     # [B, L, 256]
+        lstm_out, _ = self.lstm(x)
 
-        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)  # [B, L, 1]
-        context = torch.sum(attn_weights * lstm_out, dim=1)       # [B, 256]
+        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)
+        context = torch.sum(attn_weights * lstm_out, dim=1)
 
         return self.fc(context)
 
 # -----------------------------
 # Пути
 # -----------------------------
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(ROOT, "model")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "..", "model")
 
 MODEL_PATH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")
 TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
@@ -84,22 +78,30 @@ with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
 vocab_size = len(token_map)
 
 # -----------------------------
-# Загрузка модели
+# Ленивая загрузка модели
 # -----------------------------
 device = torch.device("cpu")
-
 model = None
 
 def load_model():
     global model
-    if model is None:
-        m = CNN_LSTM_Attention(vocab_size)
-        state = torch.load(MODEL_PATH, map_location=device)
-        m.load_state_dict(state)
-        m.to(device)
-        m.eval()
-        model = m
 
+    if model is not None:
+        return
+
+    print(">>> Loading model...")
+
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
+
+    m = CNN_LSTM_Attention(vocab_size)
+    state = torch.load(MODEL_PATH, map_location=device)
+    m.load_state_dict(state)
+    m.to(device)
+    m.eval()
+
+    model = m
+    print(">>> Model loaded successfully.")
 
 # -----------------------------
 # Нормализация URL
@@ -132,7 +134,7 @@ class URLRequest(BaseModel):
 # -----------------------------
 @app.post("/analyze")
 def analyze(req: URLRequest):
-    load_model()  # ← ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНА
+    load_model()  # <-- ОБЯЗАТЕЛЬНО
 
     url = normalize_url(req.url)
     x = tokenize(url).to(device)
@@ -146,7 +148,6 @@ def analyze(req: URLRequest):
         "legitimate": float(probs[0] * 100),
         "phishing": float(probs[1] * 100)
     }
-
 
 @app.get("/")
 def root():
