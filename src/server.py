@@ -1,53 +1,82 @@
 import os
+import json
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import json
+from pydantic import BaseModel
 import re
 
 # -----------------------------
-# 1. FastAPI + CORS
+# FastAPI
 # -----------------------------
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # Разрешаем запросы с любых сайтов
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -----------------------------
-# 2. Модель
+# Модель CNN + BiLSTM + Attention
 # -----------------------------
-class LSTMClassifier(nn.Module):
-    def __init__(self, vocab_size, embed_dim=64, hidden_dim=128, num_layers=2):
+class CNN_LSTM_Attention(nn.Module):
+    def __init__(self, vocab_size):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.lstm = nn.LSTM(embed_dim, hidden_dim, num_layers=num_layers,
-                            batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_dim * 2, 2)
+
+        # embedding 161 × 128
+        self.embedding = nn.Embedding(vocab_size, 128, padding_idx=0)
+
+        # conv 128 → 128 kernel=5
+        self.conv = nn.Conv1d(
+            in_channels=128,
+            out_channels=128,
+            kernel_size=5,
+            padding=2
+        )
+
+        # BiLSTM hidden=128
+        self.lstm = nn.LSTM(
+            input_size=128,
+            hidden_size=128,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+
+        # attention: 256 → 1
+        self.attn = nn.Linear(256, 1)
+
+        # final classifier: 256 → 2
+        self.fc = nn.Linear(256, 2)
 
     def forward(self, x):
-        x = self.embedding(x)
-        out, _ = self.lstm(x)
-        out = out[:, -1, :]
-        return self.fc(out)
+        x = self.embedding(x)          # [B, L, 128]
+        x = x.transpose(1, 2)          # [B, 128, L]
+        x = F.relu(self.conv(x))       # [B, 128, L]
+        x = x.transpose(1, 2)          # [B, L, 128]
+
+        lstm_out, _ = self.lstm(x)     # [B, L, 256]
+
+        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)  # [B, L, 1]
+        context = torch.sum(attn_weights * lstm_out, dim=1)       # [B, 256]
+
+        return self.fc(context)
 
 # -----------------------------
-# 3. Пути к файлам модели
+# Пути
 # -----------------------------
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(PROJECT_ROOT, "model")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_DIR = os.path.join(ROOT, "model")
 
-MODEL_PATH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")  # <-- правильное имя файла
+MODEL_PATH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")
 TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
 
 # -----------------------------
-# 4. Загрузка токенов
+# Токены
 # -----------------------------
 with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
     token_map = json.load(f)
@@ -55,17 +84,18 @@ with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
 vocab_size = len(token_map)
 
 # -----------------------------
-# 5. Загрузка модели
+# Загрузка модели
 # -----------------------------
 device = torch.device("cpu")
 
-model = LSTMClassifier(vocab_size=vocab_size)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model = CNN_LSTM_Attention(vocab_size)
+state = torch.load(MODEL_PATH, map_location=device)
+model.load_state_dict(state)
 model.to(device)
 model.eval()
 
 # -----------------------------
-# 6. Нормализация URL
+# Нормализация URL
 # -----------------------------
 def normalize_url(url: str) -> str:
     url = url.strip()
@@ -74,10 +104,10 @@ def normalize_url(url: str) -> str:
     return url
 
 # -----------------------------
-# 7. Токенизация
+# Токенизация
 # -----------------------------
 def tokenize(url: str):
-    tokens = [token_map.get(ch, 1) for ch in url]  # 1 = unknown
+    tokens = [token_map.get(ch, 1) for ch in url]
     if len(tokens) > 200:
         tokens = tokens[:200]
     else:
@@ -85,35 +115,29 @@ def tokenize(url: str):
     return torch.tensor([tokens], dtype=torch.long)
 
 # -----------------------------
-# 8. Pydantic модель
+# Pydantic
 # -----------------------------
 class URLRequest(BaseModel):
     url: str
 
 # -----------------------------
-# 9. Маршрут анализа
+# API
 # -----------------------------
 @app.post("/analyze")
-def analyze(request: URLRequest):
-    url = normalize_url(request.url)
+def analyze(req: URLRequest):
+    url = normalize_url(req.url)
     x = tokenize(url).to(device)
 
     with torch.no_grad():
         logits = model(x)
         probs = torch.softmax(logits, dim=1)[0]
 
-    legitimate = float(probs[0] * 100)
-    phishing = float(probs[1] * 100)
-
     return {
         "normalized_url": url,
-        "legitimate": legitimate,
-        "phishing": phishing
+        "legitimate": float(probs[0] * 100),
+        "phishing": float(probs[1] * 100)
     }
 
-# -----------------------------
-# 10. Корневой маршрут
-# -----------------------------
 @app.get("/")
 def root():
-    return {"status": "PhishGuar backend is running"}
+    return {"status": "PhishShieldAI backend running"}
