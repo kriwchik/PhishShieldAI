@@ -22,6 +22,7 @@ app.add_middleware(
 
 # -----------------------------
 # Модель CNN + BiLSTM + Attention
+# (структура точно совпадает с твоим .pth)
 # -----------------------------
 class CNN_LSTM_Attention(nn.Module):
     def __init__(self, vocab_size):
@@ -44,7 +45,10 @@ class CNN_LSTM_Attention(nn.Module):
             bidirectional=True
         )
 
-        self.attn = nn.Linear(256, 1)
+        # ВАЖНО: твой чекпойнт содержит attn.attn.weight
+        self.attn = nn.Module()
+        self.attn.attn = nn.Linear(256, 1)
+
         self.fc = nn.Linear(256, 2)
 
     def forward(self, x):
@@ -55,7 +59,7 @@ class CNN_LSTM_Attention(nn.Module):
 
         lstm_out, _ = self.lstm(x)
 
-        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)
+        attn_weights = torch.softmax(self.attn.attn(lstm_out), dim=1)
         context = torch.sum(attn_weights * lstm_out, dim=1)
 
         return self.fc(context)
@@ -85,7 +89,6 @@ model = None
 
 def load_model():
     global model
-
     if model is not None:
         return
 
@@ -134,7 +137,7 @@ class URLRequest(BaseModel):
 # -----------------------------
 @app.post("/analyze")
 def analyze(req: URLRequest):
-    load_model()  # <-- ОБЯЗАТЕЛЬНО
+    load_model()  # обязательно
 
     url = normalize_url(req.url)
     x = tokenize(url).to(device)
