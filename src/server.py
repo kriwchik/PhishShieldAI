@@ -40,9 +40,14 @@ class LSTMClassifier(nn.Module):
 # -----------------------------
 # 3. Пути к файлам модели
 # -----------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model", "model.pt")
-TOKEN_MAP_PATH = os.path.join(BASE_DIR, "model", "token_map.json")
+# server.py находится в /src/
+# модель лежит в /model/
+# поэтому поднимаемся на уровень выше
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_DIR = os.path.join(PROJECT_ROOT, "model")
+
+MODEL_PATH = os.path.join(MODEL_DIR, "model.pt")
+TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
 
 # -----------------------------
 # 4. Загрузка токенов
@@ -112,7 +117,7 @@ def analyze(request: URLRequest):
     }
 
 # -----------------------------
-# 10. Корневой маршрут (необязательно)
+# 10. Корневой маршрут
 # -----------------------------
 @app.get("/")
 def root():
