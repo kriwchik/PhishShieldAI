@@ -5,13 +5,20 @@ import torch.nn as nn
 import json
 import numpy as np
 from urllib.parse import urlparse
+import os
+
+# ---------------------------
+# Пути к модели (работают на Render)
+# ---------------------------
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+
+MODEL_PTH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")
+TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
 
 MAX_LEN = 160
-MODEL_DIR = "../model"
-MODEL_PTH = f"{MODEL_DIR}/url_cnn_lstm.pth"
-TOKEN_MAP_PATH = f"{MODEL_DIR}/token_map.json"
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 # ---------------------------
 # Нормализация URL
@@ -48,6 +55,7 @@ class Attention(nn.Module):
         context = torch.sum(x * weights.unsqueeze(-1), dim=1)
         return context
 
+
 class CNN_BiLSTM(nn.Module):
     def __init__(self, vocab_size, embed_dim=128, hidden_dim=128):
         super().__init__()
@@ -74,12 +82,14 @@ with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
 
 vocab_size = len(token_map)
 
+
 def encode_url(url: str):
     url = str(url)[:MAX_LEN]
     ids = [token_map.get(c, 1) for c in url]
     if len(ids) < MAX_LEN:
         ids += [0] * (MAX_LEN - len(ids))
     return np.array(ids[:MAX_LEN], dtype=np.int64)
+
 
 model = CNN_BiLSTM(vocab_size).to(DEVICE)
 model.load_state_dict(torch.load(MODEL_PTH, map_location=DEVICE))
@@ -91,8 +101,10 @@ model.eval()
 # ---------------------------
 app = FastAPI()
 
+
 class URLRequest(BaseModel):
     url: str
+
 
 @app.post("/analyze")
 def analyze(data: URLRequest):
@@ -108,3 +120,4 @@ def analyze(data: URLRequest):
         "legitimate": float(probs[0] * 100),
         "phishing": float(probs[1] * 100)
     }
+
