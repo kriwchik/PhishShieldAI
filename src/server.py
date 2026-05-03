@@ -88,11 +88,18 @@ vocab_size = len(token_map)
 # -----------------------------
 device = torch.device("cpu")
 
-model = CNN_LSTM_Attention(vocab_size)
-state = torch.load(MODEL_PATH, map_location=device)
-model.load_state_dict(state)
-model.to(device)
-model.eval()
+model = None
+
+def load_model():
+    global model
+    if model is None:
+        m = CNN_LSTM_Attention(vocab_size)
+        state = torch.load(MODEL_PATH, map_location=device)
+        m.load_state_dict(state)
+        m.to(device)
+        m.eval()
+        model = m
+
 
 # -----------------------------
 # Нормализация URL
