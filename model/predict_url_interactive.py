@@ -1,0 +1,135 @@
+# predict_url_interactive.py
+# Интерактивная проверка URL: вводишь ссылку — получаешь вероятность
+
+import torch
+import torch.nn as nn
+import json
+import numpy as np
+from urllib.parse import urlparse
+
+MAX_LEN = 160
+MODEL_DIR = "../model"
+MODEL_PTH = f"{MODEL_DIR}/url_cnn_lstm.pth"
+TOKEN_MAP_PATH = f"{MODEL_DIR}/token_map.json"
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ==========================
+# НОРМАЛИЗАЦИЯ URL
+# ==========================
+def normalize_url(url: str) -> str:
+    url = url.strip()
+
+    # Убираем мусор типа "url="
+    if url.startswith("url="):
+        url = url[4:]
+
+    # Добавляем https:// если нет схемы
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+
+    parsed = urlparse(url)
+
+    # Если домен без www — добавляем
+    host = parsed.netloc
+    if not host.startswith("www."):
+        host = "www." + host
+
+    # Собираем обратно
+    normalized = f"{parsed.scheme}://{host}{parsed.path}"
+    return normalized
+
+
+# ==========================
+# Модель (должна совпадать с train_cnn_lstm.py)
+# ==========================
+class Attention(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.attn = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, x):
+        scores = self.attn(x).squeeze(-1)
+        weights = torch.softmax(scores, dim=1)
+        context = torch.sum(x * weights.unsqueeze(-1), dim=1)
+        return context
+
+class CNN_BiLSTM(nn.Module):
+    def __init__(self, vocab_size, embed_dim=128, hidden_dim=128):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=5, padding=2)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True, bidirectional=True)
+        self.attn = Attention(hidden_dim * 2)
+        self.fc = nn.Linear(hidden_dim * 2, 2)
+        self.dropout = nn.Dropout(0.4)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        c = torch.relu(self.conv(x.permute(0, 2, 1))).permute(0, 2, 1)
+        lstm_out, _ = self.lstm(c)
+        context = self.attn(lstm_out)
+        return self.fc(self.dropout(context))
+
+# ==========================
+# Загрузка токенов
+# ==========================
+with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
+    token_map = json.load(f)
+
+vocab_size = len(token_map)
+
+# ==========================
+# Функция кодирования URL
+# ==========================
+def encode_url(url: str):
+    url = str(url)[:MAX_LEN]
+    ids = [token_map.get(c, 1) for c in url]
+    if len(ids) < MAX_LEN:
+        ids += [0] * (MAX_LEN - len(ids))
+    return np.array(ids[:MAX_LEN], dtype=np.int64)
+
+# ==========================
+# Загрузка модели
+# ==========================
+model = CNN_BiLSTM(vocab_size).to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PTH, map_location=DEVICE))
+model.eval()
+
+print("=== PhishShieldAI — интерактивная проверка URL ===")
+print("Введите URL (или 'exit' для выхода)\n")
+
+# ==========================
+# Основной цикл
+# ==========================
+while True:
+    url = input("URL: ").strip()
+
+    if url.lower() in ["exit", "quit", "выход"]:
+        print("Выход...")
+        break
+
+    if len(url) < 3:
+        print("Введите корректный URL.\n")
+        continue
+
+    # НОРМАЛИЗАЦИЯ
+    normalized = normalize_url(url)
+    print(f"Нормализованный URL: {normalized}")
+
+    x = torch.tensor(encode_url(normalized)).unsqueeze(0).to(DEVICE)
+
+    with torch.no_grad():
+        out = model(x)
+        probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+
+    prob_legit = probs[0] * 100
+    prob_phish = probs[1] * 100
+
+    print(f"\nВероятность legitimate: {prob_legit:.2f}%")
+    print(f"Вероятность phishing:   {prob_phish:.2f}%")
+
+    if prob_phish > 50:
+        print("⚠️  ВНИМАНИЕ: URL выглядит подозрительным!\n")
+    else:
+        print("✅ URL выглядит безопасным.\n")
