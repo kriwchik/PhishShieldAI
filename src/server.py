@@ -1,123 +1,119 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+import os
 import torch
 import torch.nn as nn
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import json
-import numpy as np
-from urllib.parse import urlparse
-import os
+import re
 
-# ---------------------------
-# Пути к модели (работают на Render)
-# ---------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+# -----------------------------
+# 1. FastAPI + CORS
+# -----------------------------
+app = FastAPI()
 
-MODEL_PTH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")
-TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # Разрешаем запросы с любых сайтов
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-MAX_LEN = 160
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# ---------------------------
-# Нормализация URL
-# ---------------------------
-def normalize_url(url: str) -> str:
-    url = url.strip()
-
-    if url.startswith("url="):
-        url = url[4:]
-
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
-
-    parsed = urlparse(url)
-    host = parsed.netloc
-
-    if not host.startswith("www."):
-        host = "www." + host
-
-    return f"{parsed.scheme}://{host}{parsed.path}"
-
-
-# ---------------------------
-# Модель
-# ---------------------------
-class Attention(nn.Module):
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.attn = nn.Linear(hidden_dim, 1, bias=False)
-
-    def forward(self, x):
-        scores = self.attn(x).squeeze(-1)
-        weights = torch.softmax(scores, dim=1)
-        context = torch.sum(x * weights.unsqueeze(-1), dim=1)
-        return context
-
-
-class CNN_BiLSTM(nn.Module):
-    def __init__(self, vocab_size, embed_dim=128, hidden_dim=128):
+# -----------------------------
+# 2. Модель
+# -----------------------------
+class LSTMClassifier(nn.Module):
+    def __init__(self, vocab_size, embed_dim=64, hidden_dim=128, num_layers=2):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=5, padding=2)
-        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True, bidirectional=True)
-        self.attn = Attention(hidden_dim * 2)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, num_layers=num_layers,
+                            batch_first=True, bidirectional=True)
         self.fc = nn.Linear(hidden_dim * 2, 2)
-        self.dropout = nn.Dropout(0.4)
 
     def forward(self, x):
         x = self.embedding(x)
-        c = torch.relu(self.conv(x.permute(0, 2, 1))).permute(0, 2, 1)
-        lstm_out, _ = self.lstm(c)
-        context = self.attn(lstm_out)
-        return self.fc(self.dropout(context))
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]
+        return self.fc(out)
 
+# -----------------------------
+# 3. Пути к файлам модели
+# -----------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model", "model.pt")
+TOKEN_MAP_PATH = os.path.join(BASE_DIR, "model", "token_map.json")
 
-# ---------------------------
-# Загрузка токенов и модели
-# ---------------------------
+# -----------------------------
+# 4. Загрузка токенов
+# -----------------------------
 with open(TOKEN_MAP_PATH, "r", encoding="utf-8") as f:
     token_map = json.load(f)
 
 vocab_size = len(token_map)
 
+# -----------------------------
+# 5. Загрузка модели
+# -----------------------------
+device = torch.device("cpu")
 
-def encode_url(url: str):
-    url = str(url)[:MAX_LEN]
-    ids = [token_map.get(c, 1) for c in url]
-    if len(ids) < MAX_LEN:
-        ids += [0] * (MAX_LEN - len(ids))
-    return np.array(ids[:MAX_LEN], dtype=np.int64)
-
-
-model = CNN_BiLSTM(vocab_size).to(DEVICE)
-model.load_state_dict(torch.load(MODEL_PTH, map_location=DEVICE))
+model = LSTMClassifier(vocab_size=vocab_size)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model.to(device)
 model.eval()
 
+# -----------------------------
+# 6. Нормализация URL
+# -----------------------------
+def normalize_url(url: str) -> str:
+    url = url.strip()
 
-# ---------------------------
-# FastAPI
-# ---------------------------
-app = FastAPI()
+    if not re.match(r"https?://", url):
+        url = "https://" + url
 
+    return url
 
+# -----------------------------
+# 7. Токенизация
+# -----------------------------
+def tokenize(url: str):
+    tokens = [token_map.get(ch, 1) for ch in url]  # 1 = unknown
+    if len(tokens) > 200:
+        tokens = tokens[:200]
+    else:
+        tokens += [0] * (200 - len(tokens))
+    return torch.tensor([tokens], dtype=torch.long)
+
+# -----------------------------
+# 8. Pydantic модель
+# -----------------------------
 class URLRequest(BaseModel):
     url: str
 
-
+# -----------------------------
+# 9. Маршрут анализа
+# -----------------------------
 @app.post("/analyze")
-def analyze(data: URLRequest):
-    normalized = normalize_url(data.url)
-    x = torch.tensor(encode_url(normalized)).unsqueeze(0).to(DEVICE)
+def analyze(request: URLRequest):
+    url = normalize_url(request.url)
+    x = tokenize(url).to(device)
 
     with torch.no_grad():
-        out = model(x)
-        probs = torch.softmax(out, dim=1).cpu().numpy()[0]
+        logits = model(x)
+        probs = torch.softmax(logits, dim=1)[0]
+
+    legitimate = float(probs[0] * 100)
+    phishing = float(probs[1] * 100)
 
     return {
-        "normalized_url": normalized,
-        "legitimate": float(probs[0] * 100),
-        "phishing": float(probs[1] * 100)
+        "normalized_url": url,
+        "legitimate": legitimate,
+        "phishing": phishing
     }
 
+# -----------------------------
+# 10. Корневой маршрут (необязательно)
+# -----------------------------
+@app.get("/")
+def root():
+    return {"status": "PhishShieldAI backend is running"}
