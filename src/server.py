@@ -40,13 +40,10 @@ class LSTMClassifier(nn.Module):
 # -----------------------------
 # 3. Пути к файлам модели
 # -----------------------------
-# server.py находится в /src/
-# модель лежит в /model/
-# поэтому поднимаемся на уровень выше
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(PROJECT_ROOT, "model")
 
-MODEL_PATH = os.path.join(MODEL_DIR, "model.pt")
+MODEL_PATH = os.path.join(MODEL_DIR, "url_cnn_lstm.pth")  # <-- правильное имя файла
 TOKEN_MAP_PATH = os.path.join(MODEL_DIR, "token_map.json")
 
 # -----------------------------
@@ -72,10 +69,8 @@ model.eval()
 # -----------------------------
 def normalize_url(url: str) -> str:
     url = url.strip()
-
     if not re.match(r"https?://", url):
         url = "https://" + url
-
     return url
 
 # -----------------------------
@@ -121,4 +116,4 @@ def analyze(request: URLRequest):
 # -----------------------------
 @app.get("/")
 def root():
-    return {"status": "PhishShieldAI backend is running"}
+    return {"status": "PhishGuar backend is running"}
