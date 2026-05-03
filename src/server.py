@@ -132,6 +132,8 @@ class URLRequest(BaseModel):
 # -----------------------------
 @app.post("/analyze")
 def analyze(req: URLRequest):
+    load_model()  # ← ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНА
+
     url = normalize_url(req.url)
     x = tokenize(url).to(device)
 
@@ -144,6 +146,7 @@ def analyze(req: URLRequest):
         "legitimate": float(probs[0] * 100),
         "phishing": float(probs[1] * 100)
     }
+
 
 @app.get("/")
 def root():
